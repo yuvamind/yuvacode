@@ -394,15 +394,20 @@ async function doChat(input) {
       
       const spinnerLabel = toolCallsThisTurn > 0 ? `working (${toolCallsThisTurn} tools used)` : 'thinking';
       startSpinner(spinnerLabel);
-      const { content, toolCalls } = await client.chat(messages, dynamicSystemPrompt, TOOL_SCHEMAS, (chunk) => {
+      let reasoningChars = 0;
+      const { content, toolCalls } = await client.chat(messages, dynamicSystemPrompt, TOOL_SCHEMAS, (chunk, type = 'content') => {
         if (firstChunk) {
           stopSpinner();
           firstChunk = false;
         }
-        streamedContent += chunk;
-        // Show live progress so user knows data is arriving
-        const chars = streamedContent.length;
-        process.stdout.write(`\r\x1b[2K ${purple('⠸')} ${dim(`receiving... ${chars} chars`)}`);
+        if (type === 'reasoning') {
+          reasoningChars += chunk.length;
+          process.stdout.write(`\r\x1b[2K ${purple('⠸')} ${dim(`reasoning... ${reasoningChars} chars`)}`);
+        } else {
+          streamedContent += chunk;
+          const chars = streamedContent.length;
+          process.stdout.write(`\r\x1b[2K ${purple('⠸')} ${dim(`receiving... ${chars} chars`)}`);
+        }
       });
 
       stopSpinner(); // Ensure spinner is stopped

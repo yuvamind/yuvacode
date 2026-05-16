@@ -7,8 +7,8 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 120000;
 export const NVIDIA_MODELS = [
   // Coding specialists
   { id: 'qwen/qwen3-coder-480b-a35b-instruct',       name: '⭐ Qwen3 Coder 480B',        tag: 'Best for coding' },
-  { id: 'deepseek-ai/deepseek-v4-flash',              name: '⚡ DeepSeek V4 Flash',        tag: 'Fast, 1M context' },
-  { id: 'deepseek-ai/deepseek-v4-pro',                name: '🧠 DeepSeek V4 Pro',          tag: 'Most intelligent' },
+  { id: 'deepseek-ai/deepseek-v4-flash',              name: '⚡ DeepSeek V4 Flash',        tag: 'Reasoning, slow on simple tasks' },
+  { id: 'deepseek-ai/deepseek-v4-pro',                name: '🧠 DeepSeek V4 Pro',          tag: 'Reasoning, most intelligent' },
   { id: 'mistralai/devstral-2-123b-instruct-2512',    name: '🔧 Devstral 2 123B',          tag: 'Code specialist' },
   { id: 'moonshotai/kimi-k2-instruct',                name: '🌙 Kimi K2',                  tag: 'Long context coding' },
   { id: 'moonshotai/kimi-k2-instruct-0905',           name: '🌙 Kimi K2 (0905)',           tag: 'Updated version' },
@@ -283,6 +283,12 @@ export class NVIDIAClient {
       body.tool_choice = 'auto';
     }
 
+    // Cap reasoning depth for DeepSeek reasoning models.
+    // Without this, deepseek-v4-flash spends 60-120s "thinking" on simple queries.
+    if (this.model.includes('deepseek')) {
+      body.reasoning_effort = this.model.includes('pro') ? 'medium' : 'low';
+    }
+
     const headers = { 'Content-Type': 'application/json' };
     if (this.apiKey) headers['Authorization'] = `Bearer ${this.apiKey}`;
 
@@ -340,20 +346,19 @@ export class NVIDIAClient {
     let toolCallsMap = new Map();
     let buffer = ''; // SSE line buffer
 
+    let inThinkBlock = false;
+
     function cleanContent(text) {
       let cleaned = text;
       // Strip any line/segment containing DSML or tool_calls control tokens
-      // These come from DeepSeek and other models as internal delimiters
       cleaned = cleaned.replace(/<[^>]{0,50}DSML[^>]{0,50}/g, '');
       cleaned = cleaned.replace(/<[^>]{0,50}tool[_\u2581]?calls[^>]{0,50}/g, '');
-      // Strip thinking tags (Qwen, DeepSeek R1, MiniMax, etc.)
-      cleaned = cleaned.replace(/<think>[\s\S]*?<\/think>/g, '');
-      cleaned = cleaned.replace(/<\/?think>/g, '');
+      // Strip reasoning tags not handled by stateful logic
       cleaned = cleaned.replace(/<reasoning>[\s\S]*?<\/reasoning>/g, '');
       cleaned = cleaned.replace(/<\/?reasoning>/g, '');
       // Strip fullwidth vertical bars that are part of control tokens
       cleaned = cleaned.replace(/\uff5c/g, '');
-      return cleaned.trim() ? cleaned : '';
+      return cleaned;
     }
 
     // Strip untagged thinking/reasoning lines from final output
@@ -364,17 +369,14 @@ export class NVIDIAClient {
 
       for (const line of lines) {
         const trimmed = line.trim();
-        // Detect internal reasoning lines (common patterns from various models)
         const isThinking = /^(The user (said|wants?|is asking|asked|needs?)|I (should|need to|will|can|must)|Let me |This is a |My (plan|approach|strategy)|Step \d+[:.])/i.test(trimmed);
         
-        // If line looks like internal reasoning and we haven't seen real content yet, skip
         if (isThinking && cleaned.length === 0) {
           skipBlock = true;
           continue;
         }
-        // Stop skipping when we hit a blank line after thinking block
         if (skipBlock && trimmed === '') {
-          continue; // skip the blank line between thinking and real content
+          continue;
         }
         skipBlock = false;
         cleaned.push(line);
@@ -385,29 +387,65 @@ export class NVIDIAClient {
     // Flush buffered content, holding back potential partial control tokens
     function flushBuffer(force = false) {
       if (!contentBuffer) return;
+      
+      let processStr = '';
       if (!force) {
-        // Hold back if buffer ends with something that looks like a partial control token
         const holdIdx = contentBuffer.lastIndexOf('<');
         if (holdIdx >= 0 && holdIdx > contentBuffer.length - 50) {
-          const safe = contentBuffer.slice(0, holdIdx);
+          processStr = contentBuffer.slice(0, holdIdx);
           contentBuffer = contentBuffer.slice(holdIdx);
-          const cleaned = cleanContent(safe);
-          if (cleaned) {
-            finalContent += cleaned;
-            if (onStream) onStream(cleaned);
-          }
-          return;
+        } else {
+          processStr = contentBuffer;
+          contentBuffer = '';
         }
+      } else {
+        processStr = contentBuffer;
+        contentBuffer = '';
       }
-      const cleaned = cleanContent(contentBuffer);
-      contentBuffer = '';
-      if (cleaned) {
-        finalContent += cleaned;
-        if (onStream) onStream(cleaned);
+
+      if (!processStr) return;
+
+      const cleaned = cleanContent(processStr);
+      
+      // Now process `<think>` tags statefully
+      let i = 0;
+      while (i < cleaned.length) {
+        if (!inThinkBlock) {
+          const thinkStart = cleaned.indexOf('<think>', i);
+          if (thinkStart !== -1) {
+            const textPart = cleaned.slice(i, thinkStart);
+            if (textPart) {
+              finalContent += textPart;
+              if (onStream) onStream(textPart, 'content');
+            }
+            inThinkBlock = true;
+            i = thinkStart + 7;
+          } else {
+            const textPart = cleaned.slice(i);
+            if (textPart) {
+              finalContent += textPart;
+              if (onStream) onStream(textPart, 'content');
+            }
+            break;
+          }
+        } else {
+          const thinkEnd = cleaned.indexOf('</think>', i);
+          if (thinkEnd !== -1) {
+            const reasoningPart = cleaned.slice(i, thinkEnd);
+            if (onStream && reasoningPart) onStream(reasoningPart, 'reasoning');
+            inThinkBlock = false;
+            i = thinkEnd + 8;
+          } else {
+            const reasoningPart = cleaned.slice(i);
+            if (onStream && reasoningPart) onStream(reasoningPart, 'reasoning');
+            break;
+          }
+        }
       }
     }
 
-    while (true) {
+    let streamDone = false;
+    while (!streamDone) {
       const { done, value } = await reader.read();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
@@ -417,15 +455,20 @@ export class NVIDIAClient {
       for (const line of lines) {
         const tLine = line.trim();
         if (!tLine.startsWith('data: ')) continue;
-        if (tLine === 'data: [DONE]') continue;
+        if (tLine === 'data: [DONE]') {
+          streamDone = true;
+          break;
+        }
 
         try {
           const data = JSON.parse(tLine.slice(6));
           const delta = data.choices?.[0]?.delta;
           if (!delta) continue;
 
-          // Skip reasoning_content (DeepSeek R1, MiniMax thinking output)
-          // We only want delta.content, not delta.reasoning_content
+          // Process reasoning content natively supported by the API (like DeepSeek R1)
+          if (delta.reasoning_content) {
+            if (onStream) onStream(delta.reasoning_content, 'reasoning');
+          }
 
           if (delta.content) {
             contentBuffer += delta.content;
