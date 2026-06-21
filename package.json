@@ -1,6 +1,6 @@
 {
   "name": "yuva-code",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "AI coding CLI — reads, edits, and runs code instead of pasting it into chat",
   "main": "src/index.js",
   "bin": {

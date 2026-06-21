@@ -1,8 +1,12 @@
 import readline from 'node:readline';
 import chalk from 'chalk';
-import { resolve, join } from 'node:path';
+import { resolve, join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { loadConfig, saveConfig, getConfigPath } from './config.js';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8'));
 import { NVIDIAClient, NVIDIA_MODELS, MODELS, PROVIDERS, getModelsForProvider, getEndpointForProvider, fetchLocalModels } from './nvidia.js';
 import { TOOL_SCHEMAS, executeTool } from './tools.js';
 import { select, input, password } from '@inquirer/prompts';
@@ -218,7 +222,7 @@ function banner() {
   const w = Math.min(process.stdout.columns || 60, 60);
   console.log();
   console.log(g3('  ' + '─'.repeat(w - 4)));
-  console.log(g1.bold('  ✻ YUVA Code') + dim('  v1.0.0'));
+  console.log(g1.bold('  ✻ YUVA Code') + dim(`  v${pkg.version}`));
   console.log(dim('  AI-Powered Coding Assistant'));
   console.log(g3('  ' + '─'.repeat(w - 4)));
   console.log();

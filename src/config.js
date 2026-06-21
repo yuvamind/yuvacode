@@ -92,8 +92,8 @@ export const DEFAULT_SYSTEM_PROMPT = DEFAULT_SYSTEM_PROMPT_FULL;
 
 const DEFAULT_CONFIG = {
   apiKey: '',
-  model: 'qwen2.5-coder:14b',
-  provider: 'ollama',
+  model: 'qwen/qwen3-coder-480b-a35b-instruct',
+  provider: 'nvidia',
   customEndpoint: ''
 };
 
