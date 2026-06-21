@@ -1,6 +1,6 @@
 {
   "name": "yuva-code",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "AI coding CLI — reads, edits, and runs code instead of pasting it into chat",
   "main": "src/index.js",
   "bin": {
@@ -17,7 +17,15 @@
     "dev": "node src/index.js",
     "test": "node --test"
   },
-  "keywords": ["ai", "cli", "coding-assistant", "nvidia", "yuva", "code", "developer-tools"],
+  "keywords": [
+    "ai",
+    "cli",
+    "coding-assistant",
+    "nvidia",
+    "yuva",
+    "code",
+    "developer-tools"
+  ],
   "author": "aftab-web-dev",
   "license": "MIT",
   "type": "module",
