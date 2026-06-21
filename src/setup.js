@@ -23,7 +23,7 @@ export async function runSetup() {
   try {
     provider = await select({
       message: 'Choose AI provider:',
-      default: 'nvidia',
+      default: config.provider || 'nvidia',
       choices: Object.entries(PROVIDERS).map(([key, p]) => ({
         name: `${p.name}${p.free ? green(' (FREE)') : orange(' (needs API key)')}`,
         value: key
@@ -36,31 +36,42 @@ export async function runSetup() {
   }
   config.provider = provider;
 
-  // Step 2: API key
-  if (provider === 'nvidia') {
+  const providerInfo = PROVIDERS[provider];
+
+  // Step 2: API key (skip for local providers — Ollama, LM Studio, Jan)
+  if (providerInfo?.local) {
+    // No key needed — just set a placeholder so the app knows it's configured
+    config.apiKey = 'local';
     console.log();
-    console.log(gray('  Get a free API key at: ') + white('https://build.nvidia.com/'));
-    console.log(gray('  (Paste with Ctrl+V — input will be masked)'));
+    console.log(green('  ✓ No API key needed for local providers.'));
+    console.log(gray(`  Endpoint: ${providerInfo.endpoint}`));
     console.log();
   } else {
-    const info = PROVIDERS[provider];
-    console.log();
-    console.log(gray(`  Get your ${info.name} API key from their dashboard.`));
-    console.log();
-  }
+    // Cloud provider — ask for API key
+    if (provider === 'nvidia') {
+      console.log();
+      console.log(gray('  Get a free API key at: ') + white('https://build.nvidia.com/'));
+      console.log(gray('  (Paste with Ctrl+V — input will be masked)'));
+      console.log();
+    } else {
+      console.log();
+      console.log(gray(`  Get your ${providerInfo.name} API key from their dashboard.`));
+      console.log();
+    }
 
-  let apiKey;
-  try {
-    apiKey = await password({
-      message: `${PROVIDERS[provider]?.name || 'API'} key:`,
-      mask: '*',
-      validate: v => v.trim().length > 0 || 'API key is required'
-    });
-  } catch {
-    console.log(gray('\n  Setup cancelled.\n'));
-    return;
+    let apiKey;
+    try {
+      apiKey = await password({
+        message: `${providerInfo?.name || 'API'} key:`,
+        mask: '*',
+        validate: v => v.trim().length > 0 || 'API key is required'
+      });
+    } catch {
+      console.log(gray('\n  Setup cancelled.\n'));
+      return;
+    }
+    config.apiKey = apiKey.trim();
   }
-  config.apiKey = apiKey.trim();
 
   // Step 3: Choose model
   const models = getModelsForProvider(provider);

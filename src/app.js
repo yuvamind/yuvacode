@@ -10,6 +10,8 @@ import { select, input, password } from '@inquirer/prompts';
 // ── Colors ──
 const purple = chalk.hex('#B392F0');
 const purpleB = chalk.hex('#B392F0').bold;
+// Current working directory for file creation
+let currentDir = process.cwd();
 const white = chalk.hex('#E1E4E8');
 const whiteB = chalk.hex('#E1E4E8').bold;
 const dim = chalk.hex('#6A737D');
@@ -24,14 +26,16 @@ const yellow = chalk.hex('#E3B341');
 
 // ── State ──
 let config = loadConfig();
+const isLocalProvider = () => PROVIDERS[config.provider]?.local === true;
 let client = new NVIDIAClient({
   apiKey: config.apiKey,
   model: config.model,
   provider: config.provider || 'nvidia',
-  customEndpoint: config.customEndpoint
+  customEndpoint: config.customEndpoint,
+  maxTokens: isLocalProvider() ? 8192 : 16384
 });
 let messages = [];
-let currentDir = process.cwd();
+
 const sessionAllow = new Set();
 
 const MAX_TOOL_CALLS_PER_TURN = 30;
@@ -322,6 +326,18 @@ function tcSignature(tc) {
 
 // ── Auto-context: gather project info to inject into system prompt ──
 async function gatherProjectContext() {
+  // Skip scanning if cwd looks like a home or root directory — scanning those
+  // would recurse through thousands of files and freeze the app.
+  const { homedir } = await import('node:os');
+  const home = homedir();
+  const isRootLike = currentDir === home ||
+    currentDir === home.replace(/\\/g, '/') ||
+    /^[A-Za-z]:[/\\]?$/.test(currentDir) || // e.g. C:\ or C:/
+    currentDir === '/' ||
+    currentDir === home + '\\' ||
+    currentDir === home + '/';
+  if (isRootLike) return ''; // Don't scan home/root dirs
+
   let context = '';
   try {
     // Get project tree
@@ -394,42 +410,98 @@ async function doChat(input) {
       
       const spinnerLabel = toolCallsThisTurn > 0 ? `working (${toolCallsThisTurn} tools used)` : 'thinking';
       startSpinner(spinnerLabel);
+      // For local models, show a hint after 10s so user knows model is just slow
+      let slowHintTimer = null;
+      if (isLocalProvider()) {
+        slowHintTimer = setTimeout(() => {
+          process.stdout.write(`\r\x1b[2K ${purple('⠸')} ${dim('model is loading / generating first token... (local models can be slow)')}`);
+        }, 10000);
+      }
       let reasoningChars = 0;
-      const { content, toolCalls } = await client.chat(messages, dynamicSystemPrompt, TOOL_SCHEMAS, (chunk, type = 'content') => {
-        if (firstChunk) {
-          stopSpinner();
-          firstChunk = false;
-        }
+      let streamedLive = false; // true when we've already printed tokens directly (local streaming)
+      // Local providers (Ollama etc.) don't reliably support OpenAI function calling
+      // via the /v1/ endpoint — they output JSON text instead of real tool calls.
+      // Skip tools for local models so they respond fast and conversationally.
+      const toolsToSend = isLocalProvider() ? null : TOOL_SCHEMAS;
+      const { content, toolCalls } = await client.chat(messages, dynamicSystemPrompt, toolsToSend, (chunk, type = 'content') => {
         if (type === 'reasoning') {
+          if (firstChunk) { stopSpinner(); firstChunk = false; }
           reasoningChars += chunk.length;
           process.stdout.write(`\r\x1b[2K ${purple('⠸')} ${dim(`reasoning... ${reasoningChars} chars`)}`);
-        } else {
+        } else if (isLocalProvider()) {
+          // Local: stream tokens live to terminal (like ollama run)
+          if (firstChunk) {
+            if (slowHintTimer) clearTimeout(slowHintTimer);
+            stopSpinner();
+            firstChunk = false;
+            streamedLive = true;
+            process.stdout.write('\r\x1b[2K'); // clear spinner line
+            process.stdout.write(purple(' │ '));  // start response prefix
+          }
           streamedContent += chunk;
-          const chars = streamedContent.length;
-          process.stdout.write(`\r\x1b[2K ${purple('⠸')} ${dim(`receiving... ${chars} chars`)}`);
+          process.stdout.write(chunk); // print token immediately
+        } else {
+          // Cloud: show char counter, render markdown when done
+          if (firstChunk) { stopSpinner(); firstChunk = false; }
+          streamedContent += chunk;
+          process.stdout.write(`\r\x1b[2K ${purple('⠸')} ${dim(`receiving... ${streamedContent.length} chars`)}`);
         }
       });
 
+      if (slowHintTimer) clearTimeout(slowHintTimer);
       stopSpinner(); // Ensure spinner is stopped
-      process.stdout.write('\r\x1b[2K'); // Clear the progress line
 
-      // Render the AI response with markdown formatting
-      if (streamedContent.trim()) {
-        lastAIResponse = streamedContent.trim();
-        const formatted = renderMarkdown(lastAIResponse);
-        const lines = formatted.split('\n');
-        for (const line of lines) {
-          console.log(purple(' │ ') + line);
+      // --- File creation helper -------------------------------------------------
+      function extractAndWriteFiles(text) {
+        const fileMap = { html: 'index.html', css: 'styles.css', js: 'script.js', json: 'data.json', txt: 'notes.txt' };
+        const regex = /```([a-z]+)\n([\s\S]*?)```/g;
+        let match;
+        while ((match = regex.exec(text)) !== null) {
+          const lang = match[1].toLowerCase();
+          const code = match[2].trim();
+          const filename = fileMap[lang] || `file_${Date.now()}.${lang}`;
+          const fullPath = join(currentDir, filename);
+          try { writeFileSync(fullPath, code, 'utf8'); console.log(purple(' ✓ ') + `Created ${filename}`); } catch (e) { console.error(dim('Failed to write file:'), e.message); }
         }
-      } else if (firstChunk) {
-        // No text content at all (pure tool calls), nothing to display
       }
+      // --------------------------------------------------------------------------
+
+      if (streamedLive) {
+        // Tokens already printed live — just add a newline, do NOT clear the line
+        lastAIResponse = streamedContent.trim();
+        // Auto‑write full HTML response to index.html if it looks like a complete document
+        if (lastAIResponse.startsWith('<!DOCTYPE html>') || lastAIResponse.startsWith('<html')) {
+          try { writeFileSync(join(currentDir, 'index.html'), lastAIResponse, 'utf8'); console.log(purple(' ✓ ') + `Created index.html`); }
+          catch (e) { console.error(dim('Failed to write file:'), e.message); }
+        }
+        process.stdout.write('\n');
+      } else {
+        // Cloud provider: clear the char-counter line, then render with markdown colours
+        process.stdout.write('\r\x1b[2K');
+        if (streamedContent.trim()) {
+          lastAIResponse = streamedContent.trim();
+          // Auto‑write full HTML response to index.html if it looks like a complete document
+          if (lastAIResponse.startsWith('<!DOCTYPE html>') || lastAIResponse.startsWith('<html')) {
+            try { writeFileSync(join(currentDir, 'index.html'), lastAIResponse, 'utf8'); console.log(purple(' ✓ ') + `Created index.html`); }
+            catch (e) { console.error(dim('Failed to write file:'), e.message); }
+          }
+          const formatted = renderMarkdown(lastAIResponse);
+          const lines = formatted.split('\n');
+          for (const line of lines) {
+            console.log(purple(' │ ') + line);
+          }
+        }
+      }
+
+      // After displaying the response, auto‑write any code blocks to files
+      extractAndWriteFiles(lastAIResponse);
 
       // Track token usage (rough: 1 token ≈ 4 chars)
       tokenEstimate += Math.ceil((streamedContent.length + (content || '').length) / 4);
 
-      // Push assistant turn
-      const assistantMsg = { role: 'assistant', content: content || null };
+      // Push assistant turn — use ?? '' so empty string never becomes null
+      // (Ollama rejects null content with a 400 error on subsequent messages)
+      const assistantMsg = { role: 'assistant', content: content ?? '' };
       if (toolCalls.length > 0) {
         assistantMsg.tool_calls = toolCalls.map(tc => ({
           id: tc.id,
@@ -631,7 +703,7 @@ async function doSlash(input) {
         });
         config.model = newModel;
         saveConfig(config);
-        client = new NVIDIAClient({ apiKey: config.apiKey, model: config.model, provider: currentProvider, customEndpoint: config.customEndpoint });
+        client = new NVIDIAClient({ apiKey: config.apiKey, model: config.model, provider: currentProvider, customEndpoint: config.customEndpoint, maxTokens: isLocalProvider() ? 8192 : 16384 });
         console.log(); console.log(greenB(' ● ') + white(`Model: ${config.model}`));
       } catch {
         console.log(dim('  cancelled'));
@@ -735,7 +807,9 @@ async function doSlash(input) {
         }
 
         saveConfig(config);
-        client = new NVIDIAClient({ apiKey: config.apiKey, model: config.model, provider: config.provider, customEndpoint: config.customEndpoint });
+        // Reload config so systemPrompt updates to match new provider (compact vs full)
+        config = loadConfig();
+        client = new NVIDIAClient({ apiKey: config.apiKey, model: config.model, provider: config.provider, customEndpoint: config.customEndpoint, maxTokens: isLocalProvider() ? 8192 : 16384 });
         console.log(); console.log(greenB(' ● ') + white(`Provider: ${PROVIDERS[providerChoice]?.name} → ${config.model}`));
       } catch {
         console.log(dim('  cancelled'));

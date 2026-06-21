@@ -1,5 +1,6 @@
 import chalk from 'chalk';
-import { loadConfig } from './config.js';
+import { loadConfig, saveConfig } from './config.js';
+import { PROVIDERS } from './nvidia.js';
 
 const accent = chalk.hex('#B392F0').bold;
 const muted = chalk.hex('#6A737D');
@@ -31,16 +32,23 @@ if (args.includes('--setup') || args.includes('-s')) {
   process.exit(0);
 }
 
-// First-run check: no apiKey → run setup
+// First-run check: no apiKey → run setup (skip for local providers — they never need a key)
 const cfg = loadConfig();
+const isLocal = PROVIDERS[cfg.provider]?.local === true;
 if (!cfg.apiKey) {
-  console.log();
-  console.log(muted('  No API key configured. Running setup...'));
-  const { runSetup } = await import('./setup.js');
-  await runSetup();
-  // Reload to verify setup actually wrote a key
-  const c2 = loadConfig();
-  if (!c2.apiKey) process.exit(0);  // user cancelled setup
+  if (isLocal) {
+    // Local provider — auto-set a placeholder key and skip setup
+    cfg.apiKey = 'local';
+    saveConfig(cfg);
+  } else {
+    console.log();
+    console.log(muted('  No API key configured. Running setup...'));
+    const { runSetup } = await import('./setup.js');
+    await runSetup();
+    // Reload to verify setup actually wrote a key
+    const c2 = loadConfig();
+    if (!c2.apiKey) process.exit(0);  // user cancelled setup
+  }
 }
 
 // Drop into chat

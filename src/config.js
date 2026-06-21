@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from '
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
-const DEFAULT_SYSTEM_PROMPT = `You are YUVA Code, an elite AI coding assistant built for developers. You are direct, efficient, and action-oriented. You write production-quality code and solve problems like a Principal Staff Engineer.
+const DEFAULT_SYSTEM_PROMPT_FULL = `You are YUVA Code, an elite AI coding assistant built for developers. You are direct, efficient, and action-oriented. You write production-quality code and solve problems like a Principal Staff Engineer.
 
 You have 7 tools: read_file, write_file, edit_file, list_files, shell, grep_search, delete_file.
 
@@ -77,12 +77,23 @@ HONESTY:
 - If something failed, say what went wrong and fix it.
 - If you can't do something, say so.`;
 
+// Compact prompt for local models (Ollama etc.) — no tools, pure conversational coding help
+export const LOCAL_SYSTEM_PROMPT = `You are YUVA Code, a fast and direct AI coding assistant running locally.
 
+Rules:
+- Answer coding questions directly and concisely.
+- For simple greetings or questions, reply in 1-2 sentences. No filler.
+- When asked to write code, output it in a markdown code block with the language specified.
+- Be direct. No "Sure, I can help!" — just answer.
+- For errors, explain the cause in one line then show the fix.
+- Format shell commands for the OS in [System Info].`;
+
+export const DEFAULT_SYSTEM_PROMPT = DEFAULT_SYSTEM_PROMPT_FULL;
 
 const DEFAULT_CONFIG = {
   apiKey: '',
-  model: 'meta/llama-3.3-70b-instruct',
-  provider: 'nvidia',
+  model: 'qwen2.5-coder:14b',
+  provider: 'ollama',
   customEndpoint: ''
 };
 
@@ -106,8 +117,12 @@ function backupCorrupt(path) {
 
 function withDefaults(cfg) {
   // Always use the system prompt from code (not from saved config)
+  // Use compact prompt for local providers to keep token count low
   const { systemPrompt, ...rest } = cfg;
-  return { ...DEFAULT_CONFIG, ...rest, systemPrompt: DEFAULT_SYSTEM_PROMPT };
+  const merged = { ...DEFAULT_CONFIG, ...rest };
+  const LOCAL_PROVIDERS = new Set(['ollama', 'lmstudio', 'jan']);
+  const prompt = LOCAL_PROVIDERS.has(merged.provider) ? LOCAL_SYSTEM_PROMPT : DEFAULT_SYSTEM_PROMPT;
+  return { ...merged, systemPrompt: prompt };
 }
 
 export function loadConfig() {

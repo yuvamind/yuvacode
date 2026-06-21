@@ -156,6 +156,7 @@ export const PROVIDERS = {
     keyUrl: 'https://ollama.com/download',
     modelsEndpoint: 'http://localhost:11434/api/tags',
     models: [
+      { id: 'qwen2.5-coder:14b',        name: '🏠 Qwen2.5 Coder 14B',   tag: 'Local coding ⭐' },
       { id: 'qwen3:32b',                name: '🏠 Qwen3 32B',           tag: 'Local coding' },
       { id: 'deepseek-coder-v2:16b',    name: '🏠 DeepSeek Coder V2',   tag: 'Local coding' },
       { id: 'codellama:34b',            name: '🏠 CodeLlama 34B',       tag: 'Local coding' },
@@ -361,7 +362,8 @@ export class NVIDIAClient {
       return cleaned;
     }
 
-    // Strip untagged thinking/reasoning lines from final output
+    // Strip untagged thinking/reasoning lines from final output.
+    // Only strips if result is non-empty — never wipes a valid response.
     function stripThinkingLines(text) {
       const lines = text.split('\n');
       const cleaned = [];
@@ -369,8 +371,9 @@ export class NVIDIAClient {
 
       for (const line of lines) {
         const trimmed = line.trim();
-        const isThinking = /^(The user (said|wants?|is asking|asked|needs?)|I (should|need to|will|can|must)|Let me |This is a |My (plan|approach|strategy)|Step \d+[:.])/i.test(trimmed);
-        
+        // Only match clear internal-monologue patterns, not normal sentences starting with 'I'
+        const isThinking = /^(The user (said|wants?|is asking|asked|needs?)\b|I (should|need to|will|must)\b|Let me (think|check|look|start|first|now)\b|This is a (task|request|problem)\b|My (plan|approach|strategy)\b|Step \d+[:.])/.test(trimmed);
+
         if (isThinking && cleaned.length === 0) {
           skipBlock = true;
           continue;
@@ -381,7 +384,9 @@ export class NVIDIAClient {
         skipBlock = false;
         cleaned.push(line);
       }
-      return cleaned.join('\n').trim();
+      const result = cleaned.join('\n').trim();
+      // Safety: if stripping removed everything, return the original (don't wipe valid responses)
+      return result.length > 0 ? result : text.trim();
     }
 
     // Flush buffered content, holding back potential partial control tokens
@@ -508,6 +513,6 @@ export class NVIDIAClient {
     // Strip any leaked thinking/reasoning from the final output
     finalContent = stripThinkingLines(finalContent);
 
-    return { content: finalContent, toolCalls };
+    return { content: finalContent || '', toolCalls };
   }
 }
