@@ -1,6 +1,12 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 import chalk from 'chalk';
 import { loadConfig, saveConfig } from './config.js';
 import { PROVIDERS } from './nvidia.js';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8'));
 
 const accent = chalk.hex('#B392F0').bold;
 const muted = chalk.hex('#6A737D');
@@ -22,7 +28,7 @@ if (args.includes('--help') || args.includes('-h')) {
 }
 
 if (args.includes('--version') || args.includes('-v')) {
-  console.log('yuva-code v1.0.0');
+  console.log(`yuva-code v${pkg.version}`);
   process.exit(0);
 }
 
